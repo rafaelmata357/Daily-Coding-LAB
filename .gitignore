@@ -14,7 +14,7 @@ __pycache__/
 *.nbconvert.ipynb
 
 # =======================================
-# Ignorar entornos virtuales (usá uno)
+# Ignorar entornos virtuales 
 # =======================================
 env/
 venv/
