@@ -1,5 +1,56 @@
-# Ignorar archivos de entorno y cachés
+# =======================================
+# Ignorar archivos generados por Python
+# =======================================
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# =======================================
+# Ignorar archivos de Jupyter
+# =======================================
 .ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# =======================================
+# Ignorar entornos virtuales (usá uno)
+# =======================================
+env/
+venv/
+.venv/
+
+# =======================================
+# Ignorar archivos de configuración local
+# =======================================
+.DS_Store
+Thumbs.db
+
+# =======================================
+# Visual Studio Code
+# =======================================
+.vscode/
+
+# =======================================
+# Archivos temporales o de pruebas
+# =======================================
+*.log
+*.bak
+*.tmp
+*.swp
+*.out
+
+# =======================================
+# Archivos de configuración sensibles
+# =======================================
 .env
+secrets.json
+
+# =======================================
+# Archivos binarios 
+# =======================================
+*.exe
+*.dll
+*.bin
+*.dat
+
