@@ -39,3 +39,18 @@ try:
     division = 10 / 0
 except ZeroDivisionError:
     print("¡Error! No se puede dividir entre cero.")
+
+# Nueva estructura: clase Persona
+
+class Persona:
+    def __init__(self, nombre, edad):
+        self.nombre = nombre
+        self.edad = edad
+
+    def saludar(self):
+        return f"Hola, mi nombre es {self.nombre} y tengo {self.edad} años."
+
+# Prueba
+if __name__ == "__main__":
+    persona = Persona("Rafa", 35)
+    print(persona.saludar())
