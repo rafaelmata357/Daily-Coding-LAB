@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Animación de Partículas de Alta Densidad</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: white;
+            font-family: monospace;
+        }
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+        #stats-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            pointer-events: none;
+            font-size: 18px;
+            font-weight: bold;
+            text-shadow: 1px 1px 2px black;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="stats-overlay">LINES: <span id="line-count">0</span></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // --- Configuración Principal ---
+        const MAX_PARTICLES = 75000; // Cantidad máxima de líneas (como en la imagen final)
+        const CIRCLE_RADIUS = 300;
+        const PARTICLE_SPEED_BASE = 2.5;
+        const TAIL_LENGTH_SCALE = 3.0; // Cuánto se estira la cola en relación a la velocidad
+
+        let scene, camera, renderer, composer;
+        let linesGeometry, linesMaterial, linesMesh;
+        let positionsRaw, colorsRaw;
+        let particlesData = [];
+        let currentActiveParticles = 0;
+        let time = 0;
+
+        const lineCountUi = document.getElementById('line-count');
+
+        // Paleta de colores para la "temperatura"
+        const colorStops = [
+            { t: 0.00, color: new THREE.Color(0x0055ff) }, // Azul oscuro (inicio)
+            { t: 0.10, color: new THREE.Color(0x00bbff) }, // Cian
+            { t: 0.30, color: new THREE.Color(0x00ff55) }, // Verde
+            { t: 0.50, color: new THREE.Color(0xffff00) }, // Amarillo
+            { t: 0.75, color: new THREE.Color(0xff5500) }, // Naranja/Rojo
+            { t: 1.00, color: new THREE.Color(0xffffff) }  // Blanco incandescente (final)
+        ];
+
+        init();
+        animate();
+
+        function init() {
+            // 1. Configuración básica de Three.js
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x000000, 0.001);
+
+            const container = document.getElementById('canvas-container');
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+
+            // Usamos cámara ortográfica para una vista 2D plana, aunque usamos tecnología 3D
+            camera = new THREE.OrthographicCamera(width / -2, width / 2, height / 2, height / -2, 1, 1000);
+            camera.position.z = 500;
+
+            renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(width, height);
+            container.appendChild(renderer.domElement);
+
+            // 2. Configurar Post-Procesamiento (Bloom/Resplandor)
+            // Esto es crucial para el aspecto brillante de las imágenes finales
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0.1;
+            bloomPass.strength = 2.5; // Intensidad del brillo
+            bloomPass.radius = 0.8;
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            // 3. Crear el círculo límite blanco
+            const ringGeometry = new THREE.RingGeometry(CIRCLE_RADIUS, CIRCLE_RADIUS + 2, 128);
+            const ringMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+            const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+            scene.add(ring);
+
+            initParticles();
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function initParticles() {
+            // Usamos BufferGeometry para alto rendimiento.
+            // Cada partícula es UN SEGMENTO DE LÍNEA, por lo tanto necesita 2 vértices (cabeza y cola).
+            // 2 vértices * 3 coordenadas (x,y,z) por vértice.
+            positionsRaw = new Float32Array(MAX_PARTICLES * 2 * 3);
+            colorsRaw = new Float32Array(MAX_PARTICLES * 2 * 3);
+
+            // Inicializamos los datos de simulación (velocidad, estado) en JS normal
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                particlesData.push({
+                    vx: 0, vy: 0,
+                    alive: false
+                });
+                // Inicializar posiciones del buffer fuera de pantalla
+                resetParticleBuffer(i);
+            }
+
+            linesGeometry = new THREE.BufferGeometry();
+            linesGeometry.setAttribute('position', new THREE.BufferAttribute(positionsRaw, 3));
+            linesGeometry.setAttribute('color', new THREE.BufferAttribute(colorsRaw, 3));
+
+            // Material crucial: VertexColors para que cada línea tenga su color,
+            // y AdditiveBlending para que se sumen los brillos en el centro.
+            linesMaterial = new THREE.LineBasicMaterial({
+                vertexColors: true,
+                blending: THREE.AdditiveBlending,
+                transparent: true,
+                opacity: 0.8,
+                depthTest: false // Importante para que el blending funcione bien en 2D
+            });
+
+            linesMesh = new THREE.LineSegments(linesGeometry, linesMaterial);
+            scene.add(linesMesh);
+        }
+
+        function resetParticle(index) {
+            // Reinicia una partícula en el centro con velocidad aleatoria hacia afuera
+            const data = particlesData[index];
+            data.alive = true;
+            const angle = Math.random() * Math.PI * 2;
+            // Velocidad base + un poco de variación aleatoria
+            const speed = PARTICLE_SPEED_BASE + Math.random() * 1.5;
+            data.vx = Math.cos(angle) * speed;
+            data.vy = Math.sin(angle) * speed;
+
+            // Índices en el buffer de geometría
+            const vHead = index * 2 * 3;
+            const vTail = (index * 2 + 1) * 3;
+
+            // Posición inicial en el centro (0,0,0)
+            positionsRaw[vHead] = 0; positionsRaw[vHead + 1] = 0; positionsRaw[vHead + 2] = 0;
+            positionsRaw[vTail] = 0; positionsRaw[vTail + 1] = 0; positionsRaw[vTail + 2] = 0;
+        }
+
+        function resetParticleBuffer(index) {
+            // Mueve los vértices lejos para que no se rendericen si están inactivos
+            const vHead = index * 2 * 3;
+            const vTail = (index * 2 + 1) * 3;
+            positionsRaw[vHead] = 9999; positionsRaw[vHead+1] = 9999;
+            positionsRaw[vTail] = 9999; positionsRaw[vTail+1] = 9999;
+        }
+
+        // Función para interpolar colores basados en la "temperatura" (ratio de completado)
+        function getHeatColor(ratio) {
+            // Asegurar que ratio esté entre 0 y 1
+            ratio = Math.max(0, Math.min(1, ratio));
+
+            for (let i = 0; i < colorStops.length - 1; i++) {
+                const stop1 = colorStops[i];
+                const stop2 = colorStops[i+1];
+
+                if (ratio >= stop1.t && ratio <= stop2.t) {
+                    // Interpolar entre estos dos stops
+                    const range = stop2.t - stop1.t;
+                    const localRatio = (ratio - stop1.t) / range;
+                    const color = new THREE.Color();
+                    // Lerp (Linear Interpolation) entre los dos colores
+                    color.lerpColors(stop1.color, stop2.color, localRatio);
+                    return color;
+                }
+            }
+            return colorStops[colorStops.length-1].color; // Fallback al último color
+        }
+
+        function onWindowResize() {
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+            camera.left = width / -2;
+            camera.right = width / 2;
+            camera.top = height / 2;
+            camera.bottom = height / -2;
+            camera.updateProjectionMatrix();
+            renderer.setSize(width, height);
+            composer.setSize(width, height);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            time += 0.01;
+
+            // 1. Aumentar la cantidad de partículas activas gradualmente
+            // La curva es cuadrática para que empiece lento y acelere al final
+            const progress = (Math.sin(time * 0.5 - Math.PI / 2) + 1) / 2; // Oscila de 0 a 1 lentamente
+            const targetParticles = Math.floor(progress * MAX_PARTICLES);
+
+            // Aumentamos gradualmente el contador actual hacia el objetivo
+            if (currentActiveParticles < targetParticles) {
+                 // Acelerar el nacimiento de partículas a medida que hay más
+                const spawnRate = Math.max(1, Math.floor(currentActiveParticles * 0.02));
+                currentActiveParticles = Math.min(MAX_PARTICLES, currentActiveParticles + spawnRate);
+            }
+
+            lineCountUi.textContent = currentActiveParticles;
+
+            // 2. Determinar el color actual basado en la densidad total
+            const heatRatio = currentActiveParticles / MAX_PARTICLES;
+            const currentColor = getHeatColor(heatRatio);
+
+            let activeCount = 0;
+
+            // 3. Bucle principal de simulación
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                const data = particlesData[i];
+
+                // Si deberíamos tener más partículas y esta está inactiva, ¡actívala!
+                if (!data.alive && activeCount < currentActiveParticles) {
+                    resetParticle(i);
+                }
+
+                if (data.alive) {
+                    activeCount++;
+
+                    // Índices de vértices en el buffer gigante
+                    const vHeadIdx = i * 2 * 3;       // Vértice delantero
+                    const vTailIdx = (index * 2 + 1) * 3; // Vértice trasero
+
+                    // Obtener posición actual de la cabeza
+                    const currentX = positionsRaw[vHeadIdx];
+                    const currentY = positionsRaw[vHeadIdx + 1];
+
+                    // Calcular distancia al centro cuadrada
+                    const distSq = currentX * currentX + currentY * currentY;
+
+                    // Verificar colisión con el círculo límite
+                    if (distSq >= CIRCLE_RADIUS * CIRCLE_RADIUS) {
+                        data.alive = false;
+                        resetParticleBuffer(i); // Ocultar
+                        continue;
+                    }
+
+                    // --- Actualizar Posiciones ---
+                    // Mover la cabeza hacia adelante
+                    positionsRaw[vHeadIdx] += data.vx;
+                    positionsRaw[vHeadIdx + 1] += data.vy;
+
+                    // Calcular la cola. La cola es la posición actual MENOS el vector de velocidad escalado.
+                    // Esto crea la línea que apunta hacia el centro.
+                    positionsRaw[vTailIdx] = positionsRaw[vHeadIdx] - data.vx * TAIL_LENGTH_SCALE;
+                    positionsRaw[vTailIdx + 1] = positionsRaw[vHeadIdx + 1] - data.vy * TAIL_LENGTH_SCALE;
+                    // Mantener Z en 0 para 2D
+                    positionsRaw[vHeadIdx + 2] = 0;
+                    positionsRaw[vTailIdx + 2] = 0;
+
+                    // --- Actualizar Colores ---
+                    // Aplicamos el color calculado tanto a la cabeza como a la cola
+                    colorsRaw[vHeadIdx] = currentColor.r;
+                    colorsRaw[vHeadIdx + 1] = currentColor.g;
+                    colorsRaw[vHeadIdx + 2] = currentColor.b;
+
+                    // Opcional: Hacer la cola un poco más oscura o transparente para un mejor efecto visual
+                    colorsRaw[vTailIdx] = currentColor.r * 0.7;
+                    colorsRaw[vTailIdx + 1] = currentColor.g * 0.7;
+                    colorsRaw[vTailIdx + 2] = currentColor.b * 0.7;
+                }
+            }
+
+            // Avisar a Three.js que los datos de los buffers han cambiado y necesitan volver a subirse a la GPU
+            linesGeometry.attributes.position.needsUpdate = true;
+            linesGeometry.attributes.color.needsUpdate = true;
+
+            // Rotar ligeramente toda la malla para dar dinamismo extra
+            linesMesh.rotation.z += 0.002;
+
+            // Renderizar usando el composer (que incluye el efecto Bloom) en lugar del renderer estándar
+            composer.render();
+        }
+    </script>
+</body>
+</html>
